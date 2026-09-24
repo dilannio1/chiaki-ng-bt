@@ -67,6 +67,13 @@ typedef struct haptic_packet_t
 class SdeckHapticsWorker;
 #endif
 
+// PARCHE dualsense-bt: módulos de háptica y micrófono por Bluetooth (hidapi).
+// La háptica real y el mic del DualSense por BT no los maneja SDL2, así que se
+// habla el protocolo HID crudo documentado por la comunidad.
+class DualSenseBtTransport;
+class DualSenseBtHaptics;
+class DualSenseBtMic;
+
 	struct StreamSessionConnectInfo
 	{
 		Settings *settings;
@@ -290,6 +297,12 @@ class StreamSession : public QObject
 		bool mic_ring_drain_queued = false;
 		bool mic_ring_overflow_logged = false;
 		QAtomicInteger<bool> mic_active = true;
+		// PARCHE dualsense-bt: cadena háptica + mic por Bluetooth (hidapi).
+		// Se crea de forma lazy en PushHapticsFrame cuando no hay
+		// haptics_output (i.e. el DualSense va por BT, no por USB).
+		DualSenseBtTransport *bt_transport = nullptr;
+		DualSenseBtHaptics *bt_haptics = nullptr;
+		DualSenseBtMic *bt_mic = nullptr;
 		QMap<Qt::Key, int> key_map;
 		QElapsedTimer connect_timer;
 
@@ -317,6 +330,9 @@ class StreamSession : public QObject
 	private slots:
 		void InitAudio(unsigned int channels, unsigned int rate);
 		void InitMic(unsigned int channels, unsigned int rate);
+		// PARCHE dualsense-bt: inicializa los buffers del pipeline del mic
+		// SIN abrir un dispositivo de captura SDL (lo usa el mic BT).
+		bool InitMicBuffers(unsigned int channels, unsigned int rate);
 		void InitHaptics();
 		void Event(ChiakiEvent *event);
 		void DisconnectHaptics();
@@ -373,6 +389,13 @@ class StreamSession : public QObject
 		void QueueMicData(const uint8_t *micdata, size_t micdata_size);
 		void DrainMicRingBuffer();
 		void ReadMic(const QByteArray &micdata);
+		// PARCHE dualsense-bt
+		bool InitBtChain();
+		void ShutdownBtChain();
+		static bool BtHapticsWriteCb(const uint8_t *data, size_t len, void *userdata);
+		static uint8_t BtHapticsSeqCb(void *userdata);
+		static void BtMicPcmCb(const int16_t *pcm, size_t samples, void *userdata);
+		static float BtRumbleGain(RumbleHapticsIntensity intensity);
 
 		void BlockInput(bool block) { input_block = block ? 1 : 2; SendFeedbackState(); }
 

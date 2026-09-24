@@ -94,6 +94,21 @@ add_executable(chiaki WIN32
 )
 target_include_directories(chiaki PRIVATE include)
 
+# PARCHE dualsense-bt: háptica real + mic del DualSense por Bluetooth (hidapi).
+# hidapi viene de vcpkg en Windows (ver vcpkg.json); Opus ya es dependencia
+# de chiaki-lib, aquí solo se necesitan sus headers para el mic.
+list(APPEND DUALSENSE_BT_SOURCES
+	src/dualsense_bt_common.cpp
+	src/dualsense_bt_transport.cpp
+	src/dualsense_bt_haptics.cpp
+	src/dualsense_bt_mic.cpp
+)
+target_sources(chiaki PRIVATE ${DUALSENSE_BT_SOURCES})
+find_package(hidapi CONFIG REQUIRED)
+find_package(Opus REQUIRED)
+target_include_directories(chiaki PRIVATE src ${Opus_INCLUDE_DIRS})
+target_link_libraries(chiaki hidapi::hidapi)
+
 add_library(placebo-libav-impl src/libav_impl.c)
 target_link_libraries(placebo-libav-impl PkgConfig::LIBPLACEBO FFMPEG::avcodec FFMPEG::avutil FFMPEG::avformat)
 target_link_libraries(chiaki PkgConfig::LIBPLACEBO placebo-libav-impl)

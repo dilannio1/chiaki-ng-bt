@@ -20,6 +20,11 @@
 
 #include <cstring>
 
+// PARCHE dualsense-bt: háptica real + mic del DualSense por Bluetooth
+#include "dualsense_bt_transport.h"
+#include "dualsense_bt_haptics.h"
+#include "dualsense_bt_mic.h"
+
 #define SETSU_UPDATE_INTERVAL_MS 4
 #define STEAMDECK_UPDATE_INTERVAL_MS 4
 #define STEAMDECK_HAPTIC_INTERVAL_MS 10 // check every interval
@@ -699,6 +704,7 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 StreamSession::~StreamSession()
 {
 	mic_active.storeRelaxed(false);
+	ShutdownBtChain(); // PARCHE dualsense-bt: detiene el poll del mic y cierra hidapi
 	StopAudioOutDrainThread();
 	if(audio_out)
 		SDL_CloseAudioDevice(audio_out);
@@ -835,24 +841,46 @@ void StreamSession::ToggleMute()
 		}
 #endif
 #if CHIAKI_GUI_ENABLE_SPEEX
-		if(speech_processing_enabled)
+		unsigned int mic_channels = speech_processing_enabled ? 1 : 2;
+#else
+		unsigned int mic_channels = 2;
+#endif
+		// PARCHE dualsense-bt: si el DualSense va por Bluetooth (sin
+		// dispositivo de audio USB), usar SU micrófono por hidapi en vez de
+		// exigir un micrófono SDL del sistema. Por USB el mic lo expone el
+		// propio control como dispositivo de audio y se elige en ajustes.
+		bool bt_mic_ready = (haptics_output == 0) && InitBtChain() && bt_mic;
+		if(bt_mic_ready)
 		{
-			//Use 1 channel for SPEEX processing and then mix to 2 channels
-			InitMic(1, opus_encoder.audio_header.rate);
+			if(!InitMicBuffers(mic_channels, opus_encoder.audio_header.rate))
+			{
+				CHIAKI_LOGE(GetChiakiLog(), "BT microphone buffer initialization failed, leaving microphone muted");
+				return;
+			}
+			CHIAKI_LOGI(log.GetChiakiLog(), "Using DualSense Bluetooth microphone");
 		}
 		else
-			InitMic(2, opus_encoder.audio_header.rate);
+		{
+#if CHIAKI_GUI_ENABLE_SPEEX
+			if(speech_processing_enabled)
+			{
+				//Use 1 channel for SPEEX processing and then mix to 2 channels
+				InitMic(1, opus_encoder.audio_header.rate);
+			}
+			else
+				InitMic(2, opus_encoder.audio_header.rate);
 #else
-		InitMic(2, opus_encoder.audio_header.rate);
+			InitMic(2, opus_encoder.audio_header.rate);
 #endif
 			if(!audio_in)
 			{
 				CHIAKI_LOGE(GetChiakiLog(), "Microphone initialization failed, leaving microphone muted");
 				return;
 			}
-			chiaki_session_connect_microphone(&session);
-			mic_connected = true;
 		}
+		chiaki_session_connect_microphone(&session);
+		mic_connected = true;
+	}
 	chiaki_session_toggle_microphone(&session, muted);
 	if (muted)
 		muted = false;
@@ -864,6 +892,9 @@ void StreamSession::ToggleMute()
 	});
 	if(audio_in)
 		SDL_PauseAudioDevice(audio_in, muted);
+	// PARCHE dualsense-bt: mute honesto (captura a nivel protocolo + LED, atómicos)
+	if(bt_mic)
+		bt_mic->setMuted(muted);
 	emit MutedChanged();
 }
 
@@ -1393,7 +1424,7 @@ void StreamSession::InitAudio(unsigned int channels, unsigned int rate)
 				qPrintable(audio_out_device_name), obtained.channels, obtained.freq, obtained.size);
 }
 
-void StreamSession::InitMic(unsigned int channels, unsigned int rate)
+bool StreamSession::InitMicBuffers(unsigned int channels, unsigned int rate)
 {
 	auto clear_mic_buffers = [this]() {
 		if(mic_buf.buf)
@@ -1428,12 +1459,6 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 #endif
 	};
 
-	if(audio_in)
-	{
-		SDL_CloseAudioDevice(audio_in);
-		audio_in = 0;
-	}
-
 	clear_mic_buffers();
 
 	mic_buf.current_byte = 0;
@@ -1443,7 +1468,7 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 	if(!mic_buf.buf)
 	{
 		CHIAKI_LOGE(GetChiakiLog(), "Could not allocate memory for mic buf, aborting mic startup");
-		return;
+		return false;
 	}
 	{
 		QMutexLocker locker(&mic_ring_mutex);
@@ -1462,7 +1487,7 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Failed to build mic audio converter: %s", SDL_GetError());
 			clear_mic_buffers();
-			return;
+			return false;
 		}
 		mic_speex_cvt.len = mic_buf.size_bytes;
 		mic_resampler_buf = (uint8_t*) calloc(mic_speex_cvt.len * mic_speex_cvt.len_mult, sizeof(uint8_t));
@@ -1470,14 +1495,14 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Mic resampler buf could not be created, aborting mic startup");
 			clear_mic_buffers();
-			return;
+			return false;
 		}
 
 		if(SDL_BuildAudioCVT(&echo_speex_cvt, AUDIO_S16SYS, 2, 48000, AUDIO_S16SYS, 1, 48000) < 0)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Failed to build echo audio converter: %s", SDL_GetError());
 			clear_mic_buffers();
-			return;
+			return false;
 		}
 		echo_speex_cvt.len = mic_speex_cvt.len * mic_speex_cvt.len_ratio;
 		echo_resampler_buf = (uint8_t*) calloc(echo_speex_cvt.len * echo_speex_cvt.len_mult, sizeof(uint8_t));
@@ -1485,10 +1510,25 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Echo resampler buf could not be created, aborting mic startup");
 			clear_mic_buffers();
-			return;
+			return false;
 		}
 	}
 #endif
+	return true;
+}
+
+void StreamSession::InitMic(unsigned int channels, unsigned int rate)
+{
+	if(audio_in)
+	{
+		SDL_CloseAudioDevice(audio_in);
+		audio_in = 0;
+	}
+
+	// PARCHE dualsense-bt: los buffers se inicializan en InitMicBuffers para
+	// que el mic BT pueda usar el pipeline sin abrir captura SDL.
+	if(!InitMicBuffers(channels, rate))
+		return;
 
 	SDL_AudioSpec spec = {0};
 	spec.freq = rate;
@@ -2199,6 +2239,17 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 #endif
 	if((rumble_haptics_intensity != RumbleHapticsIntensity::Off) && haptics_output == 0)
 	{
+		// PARCHE dualsense-bt: háptica REAL por Bluetooth en vez de rumble.
+		// buf = PCM estéreo int16 @ 3000 Hz directo del PS5: coincide exacto
+		// con el formato del sub-paquete BT 0x12 (64 B = 10.667 ms), solo se
+		// convierte int16 -> s8. Sin remuestreo.
+		if(InitBtChain() && bt_haptics)
+		{
+			bt_haptics->setGain(BtRumbleGain(rumble_haptics_intensity));
+			bt_haptics->pushSamples(reinterpret_cast<int16_t *>(buf), buf_size / (2 * sizeof(int16_t)), 3000);
+			return;
+		}
+		// Fallback: rumble convencional (código original)
 		int16_t amplitudel = 0, amplituder = 0;
 		uint32_t suml = 0, sumr = 0;
 		const size_t sample_size = 2 * sizeof(int16_t); // stereo samples
@@ -2323,6 +2374,110 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 		return;
 	}
 }
+
+// PARCHE dualsense-bt: cadena háptica + mic por Bluetooth --------------------
+// Se crea de forma lazy: haptics_output == 0 significa que no hay dispositivo
+// de audio USB del DualSense, i.e. el control va por Bluetooth.
+bool StreamSession::InitBtChain()
+{
+	if(bt_transport && bt_transport->isOpen())
+		return true;
+	ShutdownBtChain();
+	bt_transport = new DualSenseBtTransport();
+	if(!bt_transport->open())
+	{
+		CHIAKI_LOGW(log.GetChiakiLog(), "dualsense-bt: sin DualSense por Bluetooth (hidapi), usando rumble");
+		ShutdownBtChain();
+		return false;
+	}
+	bt_haptics = new DualSenseBtHaptics(&StreamSession::BtHapticsWriteCb, this, &StreamSession::BtHapticsSeqCb);
+	bt_mic = new DualSenseBtMic(bt_transport, &StreamSession::BtMicPcmCb, this);
+	if(!bt_mic->begin())
+	{
+		CHIAKI_LOGE(log.GetChiakiLog(), "dualsense-bt: falló el decodificador Opus del mic");
+		ShutdownBtChain();
+		return false;
+	}
+	if(!bt_mic->setMuted(muted)) // sincroniza con el estado de la sesión (mute honesto)
+		CHIAKI_LOGW(log.GetChiakiLog(), "dualsense-bt: no se pudo sincronizar el mute del mic (gate/LED)");
+	bt_mic->startPolling();
+	CHIAKI_LOGI(log.GetChiakiLog(), "dualsense-bt: cadena háptica+mic por Bluetooth activa");
+	return true;
+}
+
+void StreamSession::ShutdownBtChain()
+{
+	delete bt_mic;
+	bt_mic = nullptr;
+	delete bt_haptics;
+	bt_haptics = nullptr;
+	delete bt_transport; // cierra hidapi en su destructor
+	bt_transport = nullptr;
+}
+
+bool StreamSession::BtHapticsWriteCb(const uint8_t *data, size_t len, void *userdata)
+{
+	StreamSession *s = static_cast<StreamSession *>(userdata);
+	if(!s->bt_transport)
+		return false;
+	return s->bt_transport->writeOutputReport(data, len);
+}
+
+uint8_t StreamSession::BtHapticsSeqCb(void *userdata)
+{
+	StreamSession *s = static_cast<StreamSession *>(userdata);
+	if(!s->bt_transport)
+		return 0;
+	// Contador único del transporte (thread-safe): la misma secuencia que
+	// usan los reportes de control del mic, como el driver del kernel.
+	return s->bt_transport->nextSeq();
+}
+
+void StreamSession::BtMicPcmCb(const int16_t *pcm, size_t samples, void *userdata)
+{
+	StreamSession *s = static_cast<StreamSession *>(userdata);
+	// 480 muestras/frame -> buffers en stack, sin alloc.
+	size_t n = samples > 480 ? 480 : samples;
+#if CHIAKI_GUI_ENABLE_SPEEX
+	if(s->speech_processing_enabled)
+	{
+		// El pipeline speex espera mono 48 kHz (InitMicBuffers(1, ...));
+		// el mic BT ya entrega eso: inyección directa.
+		s->QueueMicData(reinterpret_cast<const uint8_t *>(pcm), n * sizeof(int16_t));
+		return;
+	}
+#endif
+	// El encoder Opus de la sesión espera estéreo (InitMicBuffers(2, ...)).
+	// Upmix: duplicar el mono a L/R.
+	int16_t stereo[960];
+	for(size_t i = 0; i < n; i++)
+	{
+		stereo[2 * i] = pcm[i];
+		stereo[2 * i + 1] = pcm[i];
+	}
+	// Mismo punto de inyección que la captura SDL: PCM -> ring buffer -> Opus -> PS5
+	s->QueueMicData(reinterpret_cast<const uint8_t *>(stereo), n * 2 * sizeof(int16_t));
+}
+
+float StreamSession::BtRumbleGain(RumbleHapticsIntensity intensity)
+{
+	switch(intensity)
+	{
+		case RumbleHapticsIntensity::VeryWeak:
+			return 0.2f;
+		case RumbleHapticsIntensity::Weak:
+			return 0.5f;
+		case RumbleHapticsIntensity::Normal:
+			return 1.0f;
+		case RumbleHapticsIntensity::Strong:
+			return 2.0f;
+		case RumbleHapticsIntensity::VeryStrong:
+			return 5.0f;
+		default:
+			return 1.0f;
+	}
+}
+// Fin PARCHE dualsense-bt --------------------------------------------------------
 
 void StreamSession::Event(ChiakiEvent *event)
 {

@@ -10,6 +10,7 @@
     "libevent",
     "miniupnpc",
     "opus",
+    "hidapi",
     "lcms",
     "speexdsp",
     "vulkan"
