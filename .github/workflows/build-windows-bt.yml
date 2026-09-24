@@ -139,8 +139,34 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: ${{ env.vcpkg_baseline }}
-          runVcpkgInstall: true
+          runVcpkgInstall: false
           vcpkgJsonGlob: "vcpkg.json"
+
+      - name: Prebuild pkgconf
+        # vcpkg_find_acquire_program(PKGCONFIG) intenta descargar un binario
+        # msys2 (pkgconf 2.1.0) que MSYS2 ya borro de todos los mirrors (404).
+        # Si la variable PKG_CONFIG existe, vcpkg la usa directo sin descargar.
+        # Por eso se compila primero solo el puerto pkgconf y se exporta su ruta.
+        shell: pwsh
+        run: |
+          $vcpkgExe = "${{ github.workspace }}\vcpkg\vcpkg.exe"
+          if (-not (Test-Path $vcpkgExe)) { $vcpkgExe = "$env:VCPKG_ROOT\vcpkg.exe" }
+          if (-not (Test-Path $vcpkgExe)) { throw "vcpkg.exe no encontrado" }
+          & $vcpkgExe install pkgconf --triplet ${{ env.triplet }} --x-install-root="${{ github.workspace }}\build\vcpkg_installed"
+          if ($LASTEXITCODE -ne 0) { throw "fallo la precompilacion de pkgconf" }
+          $pkgconfExe = "${{ github.workspace }}\build\vcpkg_installed\${{ env.triplet }}\tools\pkgconf\pkgconf.exe"
+          if (-not (Test-Path $pkgconfExe)) { throw "pkgconf.exe no quedo en $pkgconfExe" }
+          "PKG_CONFIG=$pkgconfExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "PKG_CONFIG=$pkgconfExe"
+
+      - name: Install vcpkg deps
+        shell: pwsh
+        run: |
+          $vcpkgExe = "${{ github.workspace }}\vcpkg\vcpkg.exe"
+          if (-not (Test-Path $vcpkgExe)) { $vcpkgExe = "$env:VCPKG_ROOT\vcpkg.exe" }
+          if (-not (Test-Path $vcpkgExe)) { throw "vcpkg.exe no encontrado" }
+          & $vcpkgExe install --triplet ${{ env.triplet }} --x-install-root="${{ github.workspace }}\build\vcpkg_installed"
+          if ($LASTEXITCODE -ne 0) { throw "fallo la instalacion de dependencias vcpkg" }
 
       - name: Build libplacebo
         run: |
