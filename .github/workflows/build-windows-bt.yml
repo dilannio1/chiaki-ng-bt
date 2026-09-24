@@ -152,7 +152,12 @@ jobs:
           $vcpkgExe = "${{ github.workspace }}\vcpkg\vcpkg.exe"
           if (-not (Test-Path $vcpkgExe)) { $vcpkgExe = "$env:VCPKG_ROOT\vcpkg.exe" }
           if (-not (Test-Path $vcpkgExe)) { throw "vcpkg.exe no encontrado" }
-          & $vcpkgExe install pkgconf --triplet ${{ env.triplet }} --x-install-root="${{ github.workspace }}\build\vcpkg_installed"
+          # En modo manifiesto vcpkg rechaza "install <paquete>" con argumentos.
+          # Se usa un manifiesto temporal aparte para precompilar solo pkgconf.
+          $prebuildDir = "${{ runner.temp }}\pkgconf-prebuild"
+          New-Item -ItemType Directory -Force -Path $prebuildDir | Out-Null
+          Set-Content -Path "$prebuildDir\vcpkg.json" -Value '{"name": "pkgconf-prebuild", "version": "1.0.0", "dependencies": ["pkgconf"]}'
+          & $vcpkgExe install --triplet ${{ env.triplet }} --x-manifest-root="$prebuildDir" --x-install-root="${{ github.workspace }}\build\vcpkg_installed"
           if ($LASTEXITCODE -ne 0) { throw "fallo la precompilacion de pkgconf" }
           $pkgconfExe = "${{ github.workspace }}\build\vcpkg_installed\${{ env.triplet }}\tools\pkgconf\pkgconf.exe"
           if (-not (Test-Path $pkgconfExe)) { throw "pkgconf.exe no quedo en $pkgconfExe" }
