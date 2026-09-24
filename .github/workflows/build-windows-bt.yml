@@ -101,13 +101,35 @@ jobs:
           cmake --install build
 
       - name: Setup shaderc
+        # El link viejo de google (storage.googleapis.com/shaderc/...) murio (404).
+        # En su lugar se reutiliza el shaderc que ya trae el Vulkan SDK instalado arriba:
+        # se replica el layout que espera el build (deps/include, deps/lib, deps/bin + .pc).
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          $url = ((Invoke-WebRequest -UseBasicParsing -Uri "https://storage.googleapis.com/shaderc/badges/build_link_windows_vs2019_release.html").Content | Select-String -Pattern 'url=(.*)"').Matches.Groups[1].Value
-          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile .\shaderc.zip
-          Expand-Archive -LiteralPath "shaderc.zip" -DestinationPath "."
-          cp "./install/*" "./${{ env.dep_folder }}" -Force -Recurse
-          rm "./install" -r -force
+          $sdk = "${{ env.VULKAN_SDK }}"
+          $deps = "${{ github.workspace }}\${{ env.dep_folder }}"
+          New-Item -ItemType Directory -Force -Path "$deps\include\shaderc" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$deps\lib\pkgconfig" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$deps\bin" | Out-Null
+          Copy-Item "$sdk\Include\shaderc\*" "$deps\include\shaderc\" -Force
+          Copy-Item "$sdk\Lib\shaderc*.lib" "$deps\lib\" -Force
+          Copy-Item "$sdk\Bin\shaderc_shared.dll" "$deps\bin\" -Force
+          if (-not (Test-Path "$deps\bin\shaderc_shared.dll")) { throw "shaderc_shared.dll no encontrado en el Vulkan SDK" }
+          $pc = @"
+          prefix=`${pcfiledir}/../..
+          exec_prefix=`${prefix}
+          libdir=`${prefix}/lib
+          includedir=`${prefix}/include
+
+          Name: shaderc
+          Description: Shader compilation library bundled with the Vulkan SDK
+          Version: 2024.0
+          Libs: -L`${libdir} -lshaderc_shared
+          Cflags: -I`${includedir}
+          "@
+          $pc | Out-File -FilePath "$deps\lib\pkgconfig\shaderc.pc" -Encoding ascii
+          ($pc -replace 'Name: shaderc','Name: shaderc_combined' -replace '-lshaderc_shared','-lshaderc_combined') | Out-File -FilePath "$deps\lib\pkgconfig\shaderc_combined.pc" -Encoding ascii
+          echo "shaderc listo en $deps"
 
       - name: Make build directory
         run: |
