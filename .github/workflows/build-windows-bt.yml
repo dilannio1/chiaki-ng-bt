@@ -155,7 +155,10 @@ jobs:
         # vcpkg_find_acquire_program(PKGCONFIG) intenta descargar un binario
         # msys2 (pkgconf 2.1.0) que MSYS2 ya borro de todos los mirrors (404).
         # Si la variable PKG_CONFIG existe, vcpkg la usa directo sin descargar.
-        # Por eso se compila primero solo el puerto pkgconf y se exporta su ruta.
+        # Se precompila el puerto pkgconf en una carpeta APARTE (el install
+        # principal en modo manifiesto borraria pkgconf por no estar en vcpkg.json)
+        # y se exporta PKG_CONFIG + VCPKG_KEEP_ENV_VARS para que la variable
+        # sobreviva la limpieza de entorno que vcpkg hace al compilar cada puerto.
         shell: pwsh
         run: |
           $vcpkgExe = "${{ github.workspace }}\vcpkg\vcpkg.exe"
@@ -166,11 +169,13 @@ jobs:
           $prebuildDir = "${{ runner.temp }}\pkgconf-prebuild"
           New-Item -ItemType Directory -Force -Path $prebuildDir | Out-Null
           Set-Content -Path "$prebuildDir\vcpkg.json" -Value '{"name": "pkgconf-prebuild", "version": "1.0.0", "dependencies": ["pkgconf"]}'
-          & $vcpkgExe install --triplet ${{ env.triplet }} --x-manifest-root="$prebuildDir" --x-install-root="${{ github.workspace }}\build\vcpkg_installed"
+          $prebuildRoot = "${{ github.workspace }}\build\pkgconf-prebuilt"
+          & $vcpkgExe install --triplet ${{ env.triplet }} --x-manifest-root="$prebuildDir" --x-install-root="$prebuildRoot"
           if ($LASTEXITCODE -ne 0) { throw "fallo la precompilacion de pkgconf" }
-          $pkgconfExe = "${{ github.workspace }}\build\vcpkg_installed\${{ env.triplet }}\tools\pkgconf\pkgconf.exe"
+          $pkgconfExe = "$prebuildRoot\${{ env.triplet }}\tools\pkgconf\pkgconf.exe"
           if (-not (Test-Path $pkgconfExe)) { throw "pkgconf.exe no quedo en $pkgconfExe" }
           "PKG_CONFIG=$pkgconfExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_KEEP_ENV_VARS=PKG_CONFIG" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           echo "PKG_CONFIG=$pkgconfExe"
 
       - name: Install vcpkg deps
