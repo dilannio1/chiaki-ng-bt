@@ -1424,42 +1424,43 @@ void StreamSession::InitAudio(unsigned int channels, unsigned int rate)
 				qPrintable(audio_out_device_name), obtained.channels, obtained.freq, obtained.size);
 }
 
+void StreamSession::ClearMicBuffers()
+{
+	if(mic_buf.buf)
+	{
+		free(mic_buf.buf);
+		mic_buf.buf = nullptr;
+	}
+	{
+		QMutexLocker locker(&mic_ring_mutex);
+		mic_ring_buf.clear();
+		mic_ring_read_pos = 0;
+		mic_ring_write_pos = 0;
+		mic_ring_fill = 0;
+		mic_ring_drain_queued = false;
+		mic_ring_overflow_logged = false;
+	}
+#if CHIAKI_GUI_ENABLE_SPEEX
+	if(mic_resampler_buf)
+	{
+		free(mic_resampler_buf);
+		mic_resampler_buf = nullptr;
+	}
+	if(echo_resampler_buf)
+	{
+		free(echo_resampler_buf);
+		echo_resampler_buf = nullptr;
+	}
+	{
+		QMutexLocker locker(&echo_to_cancel_mutex);
+		echo_to_cancel.clear();
+	}
+#endif
+}
+
 bool StreamSession::InitMicBuffers(unsigned int channels, unsigned int rate)
 {
-	auto clear_mic_buffers = [this]() {
-		if(mic_buf.buf)
-		{
-			free(mic_buf.buf);
-			mic_buf.buf = nullptr;
-		}
-		{
-			QMutexLocker locker(&mic_ring_mutex);
-			mic_ring_buf.clear();
-			mic_ring_read_pos = 0;
-			mic_ring_write_pos = 0;
-			mic_ring_fill = 0;
-			mic_ring_drain_queued = false;
-			mic_ring_overflow_logged = false;
-		}
-#if CHIAKI_GUI_ENABLE_SPEEX
-		if(mic_resampler_buf)
-		{
-			free(mic_resampler_buf);
-			mic_resampler_buf = nullptr;
-		}
-		if(echo_resampler_buf)
-		{
-			free(echo_resampler_buf);
-			echo_resampler_buf = nullptr;
-		}
-		{
-			QMutexLocker locker(&echo_to_cancel_mutex);
-			echo_to_cancel.clear();
-		}
-#endif
-	};
-
-	clear_mic_buffers();
+	ClearMicBuffers();
 
 	mic_buf.current_byte = 0;
 	int16_t mic_buf_size = channels * MICROPHONE_SAMPLES;
@@ -1486,7 +1487,7 @@ bool StreamSession::InitMicBuffers(unsigned int channels, unsigned int rate)
 		if(SDL_BuildAudioCVT(&mic_speex_cvt, AUDIO_S16SYS, 1, 48000, AUDIO_S16SYS, 2, 48000) < 0)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Failed to build mic audio converter: %s", SDL_GetError());
-			clear_mic_buffers();
+			ClearMicBuffers();
 			return false;
 		}
 		mic_speex_cvt.len = mic_buf.size_bytes;
@@ -1494,14 +1495,14 @@ bool StreamSession::InitMicBuffers(unsigned int channels, unsigned int rate)
 		if(!mic_resampler_buf)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Mic resampler buf could not be created, aborting mic startup");
-			clear_mic_buffers();
+			ClearMicBuffers();
 			return false;
 		}
 
 		if(SDL_BuildAudioCVT(&echo_speex_cvt, AUDIO_S16SYS, 2, 48000, AUDIO_S16SYS, 1, 48000) < 0)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Failed to build echo audio converter: %s", SDL_GetError());
-			clear_mic_buffers();
+			ClearMicBuffers();
 			return false;
 		}
 		echo_speex_cvt.len = mic_speex_cvt.len * mic_speex_cvt.len_ratio;
@@ -1509,7 +1510,7 @@ bool StreamSession::InitMicBuffers(unsigned int channels, unsigned int rate)
 		if(!echo_resampler_buf)
 		{
 			CHIAKI_LOGE(GetChiakiLog(), "Echo resampler buf could not be created, aborting mic startup");
-			clear_mic_buffers();
+			ClearMicBuffers();
 			return false;
 		}
 	}
@@ -1548,7 +1549,7 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 		CHIAKI_LOGE(log.GetChiakiLog(), "Failed to open Microphone '%s': %s", qPrintable(audio_in_device_name), SDL_GetError());
 		if(audio_in_device_name.isEmpty())
 		{
-			clear_mic_buffers();
+			ClearMicBuffers();
 			return;
 		}
 		audio_in_device_name.clear();
@@ -1556,7 +1557,7 @@ void StreamSession::InitMic(unsigned int channels, unsigned int rate)
 		if(!audio_in)
 		{
 			CHIAKI_LOGE(log.GetChiakiLog(), "Failed to open default Microphone: %s", SDL_GetError());
-			clear_mic_buffers();
+			ClearMicBuffers();
 			return;
 		}
 	}

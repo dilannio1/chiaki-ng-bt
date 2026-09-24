@@ -333,6 +333,7 @@ class StreamSession : public QObject
 		// PARCHE dualsense-bt: inicializa los buffers del pipeline del mic
 		// SIN abrir un dispositivo de captura SDL (lo usa el mic BT).
 		bool InitMicBuffers(unsigned int channels, unsigned int rate);
+		void ClearMicBuffers();
 		void InitHaptics();
 		void Event(ChiakiEvent *event);
 		void DisconnectHaptics();
