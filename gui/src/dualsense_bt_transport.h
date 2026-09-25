@@ -15,7 +15,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
+#include <string>
+#include <utility>
 
 struct hid_device_; // hidapi (opaco)
 typedef struct hid_device_ hid_device;
@@ -29,11 +32,16 @@ public:
     DualSenseBtTransport &operator=(const DualSenseBtTransport &) = delete;
 
     // Busca un DualSense por Bluetooth y lo abre. false si no se encuentra.
-    // Heurística documentada: prefiere el dispositivo cuyo path hidapi indique
-    // Bluetooth ("bth"); validar en hardware (ver INTEGRATION.md §7).
+    // Detección en dos niveles: primero heurística de ruta hidapi ("bth"),
+    // luego confirmación real leyendo un input report (0x31 = Bluetooth,
+    // 0x01 = USB). Así no depende del formato del path en cada Windows.
     bool open();
     void close();
     bool isOpen() const { return dev_ != nullptr; }
+
+    // Callback opcional de diagnóstico (lo conecta StreamSession al log de
+    // chiaki): informa qué candidatos vio hidapi y cuál se eligió.
+    void setLogCallback(std::function<void(const std::string &)> cb) { log_cb_ = std::move(cb); }
 
     // Escribe un output report SIN el prefijo 0xA2 (lo agrega aquí según la
     // plataforma: Windows sí, Linux/hidraw no). data incluye su CRC final.
@@ -69,4 +77,6 @@ private:
     // El transporte se usa desde 3 hilos (háptica, poll del mic, GUI/mute):
     // hidapi no garantiza thread-safety, así que se serializa aquí.
     std::mutex io_mutex_;
+    std::function<void(const std::string &)> log_cb_;
+    void Log(const char *fmt, ...);
 };

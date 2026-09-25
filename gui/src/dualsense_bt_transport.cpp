@@ -1,8 +1,12 @@
 #include "dualsense_bt_transport.h"
 #include "dualsense_bt_common.h"
 
+#include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <hidapi/hidapi.h>
@@ -23,9 +27,58 @@ bool PathLooksBluetooth(const char *path)
     std::string p(path);
     for (auto &c : p)
         c = static_cast<char>(tolower(c));
-    return p.find("bth") != std::string::npos || p.find("bluetooth") != std::string::npos;
+    return p.find("bth") != std::string::npos ||
+           p.find("bthenum") != std::string::npos ||
+           p.find("bluetooth") != std::string::npos;
+}
+
+int64_t NowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// Confirma que un handle recién abierto es el control por Bluetooth leyendo
+// un input report: por BT el reporte de estado es 0x31; por USB es 0x01.
+// Es la señal real, no depende del texto del path hidapi.
+bool ConfirmBluetooth(hid_device *h, uint8_t &seen_id)
+{
+    seen_id = 0;
+    uint8_t buf[128];
+    const int64_t deadline = NowMs() + 300; // el control emite ~250 Hz
+    while (NowMs() < deadline)
+    {
+        int r = hid_read_timeout(h, buf, sizeof(buf), 50);
+        if (r > 0)
+        {
+            seen_id = buf[0];
+            if (seen_id == 0x31)
+                return true;
+            if (seen_id == 0x01)
+                return false; // USB: no es lo que buscamos
+            // Otro reporte: seguir esperando.
+        }
+        else if (r < 0)
+        {
+            return false;
+        }
+    }
+    return false; // sin reportes: no confirmar
 }
 } // namespace
+
+void DualSenseBtTransport::Log(const char *fmt, ...)
+{
+    if (!log_cb_)
+        return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    log_cb_(buf);
+}
 
 DualSenseBtTransport::DualSenseBtTransport() : dev_(nullptr), seq_(0), mic_counter_(0)
 {
@@ -44,35 +97,56 @@ bool DualSenseBtTransport::open()
         return false;
 
     hid_device_info *devs = hid_enumerate(DualSenseBt::kVidSony, 0);
-    hid_device_info *best = nullptr;
-    bool best_is_bt = false;
+    std::vector<std::pair<std::string, bool>> cands; // (path, parece BT por ruta)
     for (hid_device_info *d = devs; d; d = d->next)
     {
         if (d->product_id != DualSenseBt::kPidDualSense &&
             d->product_id != DualSenseBt::kPidDualSenseEdge)
             continue;
-        bool is_bt = PathLooksBluetooth(d->path);
-        if (!best || (is_bt && !best_is_bt))
-        {
-            best = d;
-            best_is_bt = is_bt;
-        }
+        if (!d->path)
+            continue;
+        bool bt_hint = PathLooksBluetooth(d->path);
+        Log("dualsense-bt: candidato hidapi pid=0x%04x bt_hint=%d path=%s",
+            d->product_id, bt_hint ? 1 : 0, d->path);
+        cands.emplace_back(d->path, bt_hint);
     }
-    std::string path;
-    // Solo Bluetooth: si el mejor candidato no es BT, no abrir nada. Abrir el
-    // control por USB con el protocolo BT rompería la coexistencia con SDL
-    // (por USB la háptica y el mic los maneja chiaki-ng por audio USB).
-    if (best && best_is_bt)
-        path = best->path;
     hid_free_enumeration(devs);
-    if (path.empty())
+    if (cands.empty())
     {
+        Log("dualsense-bt: hidapi no enumeró ningún DualSense");
         hid_exit();
         return false;
     }
-    dev_ = hid_open_path(path.c_str());
+    // Dos pasadas: primero los que parecen BT por la ruta, luego el resto.
+    // La confirmación definitiva es el input report (0x31 = BT, 0x01 = USB),
+    // así un USB nunca se abre con protocolo BT aunque el path no matchee.
+    for (int pass = 0; pass < 2 && !dev_; pass++)
+    {
+        for (auto &c : cands)
+        {
+            if ((pass == 0) != c.second)
+                continue;
+            hid_device *h = hid_open_path(c.first.c_str());
+            if (!h)
+            {
+                Log("dualsense-bt: no se pudo abrir %s", c.first.c_str());
+                continue;
+            }
+            uint8_t seen_id = 0;
+            if (ConfirmBluetooth(h, seen_id))
+            {
+                dev_ = h;
+                Log("dualsense-bt: control BT confirmado (input 0x31) en %s", c.first.c_str());
+                break;
+            }
+            Log("dualsense-bt: %s no confirmó BT (input 0x%02x), se omite",
+                c.first.c_str(), seen_id);
+            hid_close(h);
+        }
+    }
     if (!dev_)
     {
+        Log("dualsense-bt: ningún candidato confirmó Bluetooth");
         hid_exit();
         return false;
     }

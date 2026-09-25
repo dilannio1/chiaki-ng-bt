@@ -2385,6 +2385,9 @@ bool StreamSession::InitBtChain()
 		return true;
 	ShutdownBtChain();
 	bt_transport = new DualSenseBtTransport();
+	bt_transport->setLogCallback([this](const std::string &msg) {
+		CHIAKI_LOGI(log.GetChiakiLog(), "%s", msg.c_str());
+	});
 	if(!bt_transport->open())
 	{
 		CHIAKI_LOGW(log.GetChiakiLog(), "dualsense-bt: sin DualSense por Bluetooth (hidapi), usando rumble");
