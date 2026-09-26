@@ -80,6 +80,9 @@ public:
         return s;
     }
 
+    // Diagnóstico: lo usa también DualSenseBtMic (clase colaboradora).
+    void Log(const char *fmt, ...);
+
 private:
     hid_device *dev_;
     uint8_t seq_;
@@ -89,7 +92,6 @@ private:
     // acceso al handle se serializa con io_mutex_.
     std::mutex io_mutex_;
     std::function<void(const std::string &)> log_cb_;
-    void Log(const char *fmt, ...);
 
     // Cola acotada + hilo escritor: desacopla al productor (hilo de audio)
     // del hid_write bloqueante. Si el Bluetooth no da abasto se descarta lo

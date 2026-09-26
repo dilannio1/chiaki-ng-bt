@@ -15,6 +15,7 @@
 #include <QMutexLocker>
 #include <QtMath>
 #include <atomic>
+#include <chrono>
 
 #include <algorithm>
 
@@ -892,9 +893,14 @@ void StreamSession::ToggleMute()
 	});
 	if(audio_in)
 		SDL_PauseAudioDevice(audio_in, muted);
-	// PARCHE dualsense-bt: mute honesto (captura a nivel protocolo + LED, atómicos)
+	// PARCHE dualsense-bt: mute honesto (captura a nivel protocolo + LED, atómicos).
+	// Si el transporte no aceptó el cambio, se registra: la UI no debe
+	// mostrar "mic activo" cuando el control nunca se enteró.
 	if(bt_mic)
-		bt_mic->setMuted(muted);
+	{
+		if(!bt_mic->setMuted(muted))
+			CHIAKI_LOGE(GetChiakiLog(), "dualsense-bt: setMuted(%d) fallo; el microfono BT puede no responder", muted ? 1 : 0);
+	}
 	emit MutedChanged();
 }
 
@@ -2662,6 +2668,28 @@ void StreamSession::Event(ChiakiEvent *event)
 			uint8_t data_right[10];
 			memcpy(data_right, event->trigger_effects.right, 10);
 			uint8_t type_right = event->trigger_effects.type_right;
+			// Diagnóstico de fuerza (throttle 2 s, solo si cambia): registra
+			// qué efectos manda el PS5 para calibrar contra el PS5 directo.
+			{
+				static auto last_fx_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+				static uint8_t last_fx[22] = {0};
+				uint8_t cur_fx[22];
+				cur_fx[0] = type_left;
+				memcpy(cur_fx + 1, data_left, 10);
+				cur_fx[11] = type_right;
+				memcpy(cur_fx + 12, data_right, 10);
+				auto now = std::chrono::steady_clock::now();
+				if(memcmp(cur_fx, last_fx, sizeof(cur_fx)) != 0 &&
+					now - last_fx_log > std::chrono::seconds(2))
+				{
+					last_fx_log = now;
+					memcpy(last_fx, cur_fx, sizeof(cur_fx));
+					uint8_t ti = (ps5_trigger_intensity < 0) ? 0x70 : (uint8_t)ps5_trigger_intensity;
+					CHIAKI_LOGI(GetChiakiLog(), "dualsense-bt: trigger fx L(t=%u %02x%02x%02x%02x..) R(t=%u %02x%02x%02x%02x..) int=0x%02x",
+						type_left, data_left[0], data_left[1], data_left[2], data_left[3],
+						type_right, data_right[0], data_right[1], data_right[2], data_right[3], ti);
+				}
+			}
 			QMetaObject::invokeMethod(this, [this, type_left, data_left, type_right, data_right]() {
 				for(auto controller : controllers)
 					controller->SetTriggerEffects(type_left, data_left, type_right, data_right);

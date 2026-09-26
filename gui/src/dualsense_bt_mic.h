@@ -18,6 +18,7 @@
 // serializa los accesos hidapi con mutex.
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <thread>
@@ -57,5 +58,9 @@ private:
     std::atomic<bool> muted_;
     std::atomic<bool> polling_;
     std::thread poll_thread_;
-    unsigned poll_count_;
+    std::atomic<unsigned> poll_count_;
+    // Diagnóstico del enable: ¿llegan reportes variante-mic tras unmute?
+    std::atomic<unsigned> mic_reports_seen_{0};
+    std::atomic<bool> mic_diag_warned_{false};
+    std::chrono::steady_clock::time_point unmute_time_{};
 };

@@ -10,6 +10,7 @@ namespace
 {
 constexpr size_t kMicReportSize = 78;
 constexpr size_t kOpusOffset = 3; // [0]=0x31 [1]=seq|flags [2]=UNKNOWN
+constexpr size_t kCrcSize = 4;    // CRC-32 al final del input 0x31 por BT
 constexpr int kSampleRate = 48000;
 constexpr int kFrameSamples = 480; // 10 ms
 } // namespace
@@ -47,8 +48,17 @@ bool DualSenseBtMic::setMuted(bool muted)
         ok = false;
     if (!transport_->sendMicControlReport(muted))
         ok = false;
-    muted_ = muted;
-    poll_count_ = 0;
+    // Mute honesto: el estado interno solo refleja lo que el control
+    // realmente aceptó. Si falla, el llamador lo ve en el retorno.
+    if (ok)
+    {
+        muted_ = muted;
+        poll_count_ = 0;
+        mic_reports_seen_ = 0;
+        mic_diag_warned_ = false;
+        if (!muted)
+            unmute_time_ = std::chrono::steady_clock::now();
+    }
     return ok;
 }
 
@@ -76,6 +86,14 @@ void DualSenseBtMic::pollLoop()
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(25));
             continue;
+        }
+        // Diagnóstico del enable (una sola vez): si 5 s después del unmute
+        // no llegó ninguna variante-mic, el 0x11 probablemente no hizo latch.
+        if (!muted_.load() && !mic_diag_warned_.load() && mic_reports_seen_.load() == 0 &&
+            std::chrono::steady_clock::now() - unmute_time_ > std::chrono::seconds(5))
+        {
+            mic_diag_warned_ = true;
+            transport_->Log("dualsense-bt: sin variante-mic 5 s tras unmute (el enable 0x11 podria no hacer latch)");
         }
         // Drena sin bloquear: los input reports llegan a ~560/s.
         for (int i = 0; i < 16; i++)
@@ -106,15 +124,20 @@ bool DualSenseBtMic::handleReport(const uint8_t *r, size_t len)
         return true; // no es 0x31
     if (!(r[1] & 0x02))
         return true; // variante gamepad-state, no mic
+    // Diagnóstico del enable: contar variantes-mic aunque estemos muteados
+    // (si el control streamea, el enable hizo latch).
+    if (++mic_reports_seen_ == 1 && transport_)
+        transport_->Log("dualsense-bt: variante-mic 0x31 recibida (enable con latch)");
     if (muted_)
         return true; // mute honesto: ni siquiera decodificamos
     if (!cb_)
         return true;
 
     // El frame Opus es auto-delimitado; opus_packet_parse nos da su longitud
-    // exacta (resuelve la discrepancia 71 B vs 75 B de la literatura).
+    // exacta. Se excluyen los 4 B de CRC-32 al final del reporte BT
+    // (cfr. hid-playstation.c: el input 0x31 BT cierra con CRC, seed 0xA1).
     const unsigned char *data = r + kOpusOffset;
-    opus_int32 data_len = static_cast<opus_int32>(len - kOpusOffset);
+    opus_int32 data_len = static_cast<opus_int32>(len - kOpusOffset - kCrcSize);
     unsigned char toc = 0;
     const unsigned char *frames[48];
     opus_int16 sizes[48];
