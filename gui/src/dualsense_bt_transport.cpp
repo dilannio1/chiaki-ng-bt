@@ -150,11 +150,13 @@ bool DualSenseBtTransport::open()
         hid_exit();
         return false;
     }
+    startWriter();
     return true;
 }
 
 void DualSenseBtTransport::close()
 {
+    stopWriter();
     if (dev_)
     {
         hid_close(dev_);
@@ -163,22 +165,89 @@ void DualSenseBtTransport::close()
     hid_exit();
 }
 
+void DualSenseBtTransport::startWriter()
+{
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    if (writer_running_)
+        return;
+    writer_stop_ = false;
+    write_queue_.clear();
+    writer_running_ = true;
+    writer_thread_ = std::thread(&DualSenseBtTransport::writerLoop, this);
+}
+
+void DualSenseBtTransport::stopWriter()
+{
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (!writer_running_)
+            return;
+        writer_stop_ = true;
+        writer_running_ = false;
+    }
+    queue_cv_.notify_all();
+    if (writer_thread_.joinable())
+        writer_thread_.join();
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    write_queue_.clear(); // descarta lo que quedó sin enviar (apagado limpio)
+}
+
+void DualSenseBtTransport::writerLoop()
+{
+    while (true)
+    {
+        std::vector<uint8_t> pkt;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this] { return writer_stop_ || !write_queue_.empty(); });
+            if (!write_queue_.empty())
+            {
+                pkt = std::move(write_queue_.front());
+                write_queue_.pop_front();
+            }
+            else if (writer_stop_)
+            {
+                return;
+            }
+            else
+            {
+                continue; // spurious wakeup sin trabajo
+            }
+        }
+        // hid_write bloqueante FUERA del lock de la cola y con el lock de
+        // I/O (serializado con los hid_read del poll del mic).
+        std::lock_guard<std::mutex> io_lock(io_mutex_);
+        if (dev_ && !pkt.empty())
+            hid_write(dev_, pkt.data(), pkt.size());
+    }
+}
+
 bool DualSenseBtTransport::writeOutputReport(const uint8_t *data, size_t len)
 {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    if (!dev_ || !data || len == 0)
+    if (!data || len == 0)
         return false;
+    // Paquete listo para el cable (prefijo 0xA2 en Windows) ANTES de encolar.
+    std::vector<uint8_t> pkt;
 #ifdef _WIN32
     // En Windows el reporte BT viaja con el prefijo HIDP 0xA2
     // (precedente: DS4Windows).
-    std::vector<uint8_t> buf(len + 1);
-    buf[0] = DualSenseBt::kHidpOutputPrefix;
-    std::memcpy(buf.data() + 1, data, len);
-    return hid_write(dev_, buf.data(), buf.size()) == static_cast<int>(buf.size());
+    pkt.reserve(len + 1);
+    pkt.push_back(DualSenseBt::kHidpOutputPrefix);
 #else
     // En Linux/hidraw el kernel maneja la capa HIDP: reporte crudo.
-    return hid_write(dev_, data, len) == static_cast<int>(len);
+    pkt.reserve(len);
 #endif
+    pkt.insert(pkt.end(), data, data + len);
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (!writer_running_)
+            return false;
+        if (write_queue_.size() >= kWriteQueueMax)
+            write_queue_.pop_front(); // BT saturado: descarta lo más viejo
+        write_queue_.push_back(std::move(pkt));
+    }
+    queue_cv_.notify_one();
+    return true;
 }
 
 bool DualSenseBtTransport::sendMicControlReport(bool mic_muted)

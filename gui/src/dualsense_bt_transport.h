@@ -15,10 +15,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 struct hid_device_; // hidapi (opaco)
 typedef struct hid_device_ hid_device;
@@ -45,6 +49,12 @@ public:
 
     // Escribe un output report SIN el prefijo 0xA2 (lo agrega aquí según la
     // plataforma: Windows sí, Linux/hidraw no). data incluye su CRC final.
+    //
+    // NO bloquea: el paquete se encola y un hilo escritor dedicado hace el
+    // hid_write (que por Bluetooth puede tardar decenas/ms). writeOutputReport
+    // se llama desde el hilo de audio de Chiaki; un hid_write síncrono ahí
+    // congelaba el stream en cuanto un juego generaba audio continuo.
+    // Retorna true si el paquete quedó encolado.
     bool writeOutputReport(const uint8_t *data, size_t len);
 
     // Reporte 0x31: gate del mic (power_save_control MIC_MUTE), volumen del
@@ -74,9 +84,26 @@ private:
     hid_device *dev_;
     uint8_t seq_;
     uint8_t mic_counter_; // SPEC: += 2 por reporte con sub-paquete 0x11
-    // El transporte se usa desde 3 hilos (háptica, poll del mic, GUI/mute):
-    // hidapi no garantiza thread-safety, así que se serializa aquí.
+    // El transporte se usa desde 4 hilos (háptica/audio, poll del mic,
+    // GUI/mute, escritor): hidapi no garantiza thread-safety, así que el
+    // acceso al handle se serializa con io_mutex_.
     std::mutex io_mutex_;
     std::function<void(const std::string &)> log_cb_;
     void Log(const char *fmt, ...);
+
+    // Cola acotada + hilo escritor: desacopla al productor (hilo de audio)
+    // del hid_write bloqueante. Si el Bluetooth no da abasto se descarta lo
+    // más viejo: feedback fresco vale más que feedback atrasado. El hilo
+    // escritor nunca toma queue_mutex_ teniendo io_mutex_ (ni al revés en
+    // otro hilo), así no hay inversión de locks con el poll del mic.
+    std::thread writer_thread_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<std::vector<uint8_t>> write_queue_;
+    bool writer_stop_ = false;
+    bool writer_running_ = false;
+    static constexpr size_t kWriteQueueMax = 32; // ~340 ms de háptica a 94 Hz
+    void writerLoop();
+    void startWriter();
+    void stopWriter();
 };
