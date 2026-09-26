@@ -1225,7 +1225,7 @@ void StreamSession::UpdateGamepads()
 			});
 			if (controller->IsDualSense() || controller->IsDualSenseEdge())
 			{
-				uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
+				uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0x70 : ps5_trigger_intensity /* nibble 7 = 12.5% (minimo en rango; 0xF0 era nibble 15, fuera de rango) */;
 				uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
 				controller->SetDualsenseMic(muted);
 				if(this->haptics_output > 0)
@@ -2619,7 +2619,7 @@ void StreamSession::Event(ChiakiEvent *event)
 					break;
 				}
 			}
-			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
+			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0x70 : ps5_trigger_intensity /* nibble 7 = 12.5% (minimo en rango; 0xF0 era nibble 15, fuera de rango) */;
 			uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
 			emit DualSenseIntensityChanged(trigger_intensity | rumble_intensity);
 			break;
@@ -2636,15 +2636,19 @@ void StreamSession::Event(ChiakiEvent *event)
 					break;
 				}
 				case Weak: {
-					ps5_trigger_intensity = 0x90;
+					// Nibble alto: escala de potencia del firmware 0-7
+					// (cada paso -12.5%; espeja la escala del rumble 0/2/3).
+					// Antes era 0x90 (nibble 9, fuera de rango -> comportamiento indefinido).
+					ps5_trigger_intensity = 0x30;
 					break;
 				}
 				case Medium: {
-					ps5_trigger_intensity = 0x60;
+					// Antes era 0x60 (nibble 6 = 25% de potencia, recorte brutal para "Medium").
+					ps5_trigger_intensity = 0x20;
 					break;
 				}
 			}
-			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0xF0 : ps5_trigger_intensity;
+			uint8_t trigger_intensity = (ps5_trigger_intensity < 0) ? 0x70 : ps5_trigger_intensity /* nibble 7 = 12.5% (minimo en rango; 0xF0 era nibble 15, fuera de rango) */;
 			uint8_t rumble_intensity = (ps5_rumble_intensity < 0) ? 0x0F : ps5_rumble_intensity;
 			emit DualSenseIntensityChanged(trigger_intensity | rumble_intensity);
 			break;
