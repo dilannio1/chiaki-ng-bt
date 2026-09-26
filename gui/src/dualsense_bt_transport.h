@@ -86,7 +86,7 @@ public:
 private:
     hid_device *dev_;
     uint8_t seq_;
-    uint8_t mic_counter_; // SPEC: += 2 por reporte con sub-paquete 0x11
+    uint8_t mic_counter_; // += 1 por reporte con sub-paquete 0x11 (un subpaquete)
     // El transporte se usa desde 4 hilos (háptica/audio, poll del mic,
     // GUI/mute, escritor): hidapi no garantiza thread-safety, así que el
     // acceso al handle se serializa con io_mutex_.

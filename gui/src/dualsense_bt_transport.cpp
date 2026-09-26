@@ -226,17 +226,16 @@ bool DualSenseBtTransport::writeOutputReport(const uint8_t *data, size_t len)
 {
     if (!data || len == 0)
         return false;
-    // Paquete listo para el cable (prefijo 0xA2 en Windows) ANTES de encolar.
+    // El paquete se encola TAL CUAL (reporte crudo con su CRC final).
+    //
+    // OJO: en Windows NO se antepone 0xA2 al buffer. hidapi/WriteFile
+    // interpreta el primer byte como report ID; 0xA2 no existe en el
+    // descriptor y el reporte jamás llegaba válido al firmware. El 0xA2
+    // es el encabezado HIDP que el stack Bluetooth pone en el cable, y
+    // solo pertenece al cálculo del CRC (cfr. Crc32). Así lo hacen SDL,
+    // DS4Windows y el kernel: 78 B empezando en 0x31 en ambas plataformas.
     std::vector<uint8_t> pkt;
-#ifdef _WIN32
-    // En Windows el reporte BT viaja con el prefijo HIDP 0xA2
-    // (precedente: DS4Windows).
-    pkt.reserve(len + 1);
-    pkt.push_back(DualSenseBt::kHidpOutputPrefix);
-#else
-    // En Linux/hidraw el kernel maneja la capa HIDP: reporte crudo.
     pkt.reserve(len);
-#endif
     pkt.insert(pkt.end(), data, data + len);
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -282,9 +281,13 @@ bool DualSenseBtTransport::sendMicControlSubpacket(bool mic_on)
     r[3] = 0x07; // longitud del payload
     r[4] = mic_on ? 0xFF : 0xFE;
     // r[5..8] = volume-ish (UNKNOWN, en cero; el SPEC desaconseja adivinar)
-    r[9] = mic_counter_;
-    // r[10] = resto del payload (cero)
-    mic_counter_ = static_cast<uint8_t>(mic_counter_ + 2);
+    // Layout verificado contra 5 implementaciones + captura real
+    // (dualsense-neo, HeadsetPlayMusic): 0xFF en r[9], contador al final.
+    r[9] = 0xFF;
+    r[10] = mic_counter_;
+    // Un sub-paquete por reporte -> el contador avanza de 1 en 1
+    // (el += 2 es convención de reportes de 2 frames, cfr. DS5Dongle).
+    mic_counter_ = static_cast<uint8_t>(mic_counter_ + 1);
     const uint32_t crc = DualSenseBt::Crc32(r, kSize - 4);
     r[kSize - 4] = static_cast<uint8_t>(crc & 0xFF);
     r[kSize - 3] = static_cast<uint8_t>((crc >> 8) & 0xFF);
