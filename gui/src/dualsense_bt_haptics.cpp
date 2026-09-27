@@ -101,10 +101,25 @@ void DualSenseBtHaptics::flush()
 
 void DualSenseBtHaptics::emitFrame(const uint8_t pcm[64])
 {
-    uint8_t sub[2 + HAPTIC_FRAME_BYTES];
-    sub[0] = SUBPKT_HAPTIC | 0x80; // bit 'sized'
-    sub[1] = HAPTIC_FRAME_BYTES;
-    std::memcpy(sub + 2, pcm, HAPTIC_FRAME_BYTES);
+    // Sub-paquete 0x11 (control, 9 B) + sub-paquete 0x12 (haptico, 66 B).
+    // Layout byte-identico a la captura real de hardware (dualsense-neo):
+    //   91 07 FE 00 00 00 00 FF <ctr> | 92 40 <64 B PCM>
+    // El 0x11 con mascara 0xFE (mic OFF) activa el pipeline de audio/hapticos
+    // sin habilitar el microfono.
+    uint8_t sub[9 + 2 + HAPTIC_FRAME_BYTES];
+    uint8_t *p = sub;
+    *p++ = 0x91; // 0x11 | sized
+    *p++ = 0x07; // longitud del payload
+    *p++ = 0xFE; // mic OFF (mascara sin el bit de mic)
+    *p++ = 0x00;
+    *p++ = 0x00;
+    *p++ = 0x00;
+    *p++ = 0x00;
+    *p++ = 0xFF;
+    *p++ = ctrl_counter_++; // avanza de 1 en 1 por reporte
+    *p++ = SUBPKT_HAPTIC | 0x80; // 0x12 | bit 'sized'
+    *p++ = HAPTIC_FRAME_BYTES;
+    std::memcpy(p, pcm, HAPTIC_FRAME_BYTES);
 
     constexpr size_t need = 1 + 1 + sizeof(sub) + 4; // id + seq + sub + CRC
     const ReportSize *sel = nullptr;
@@ -215,9 +230,11 @@ int main()
                           (static_cast<uint32_t>(r[r.size() - 1]) << 24);
         if (stored != test_crc(r.data(), r.size() - 4))
             crc_ok = false;
-        if (r.size() > 4 && (r[2] != 0x92 || r[3] != 0x40))
-            hdr_ok = false; // 0x12|sized, len 64
-        for (size_t k = 4; k < 68 && k < r.size(); ++k)
+        // Layout: [id][seq][0x11: 91 07 FE 00 00 00 00 FF ctr][0x12: 92 40 + 64 B]
+        if (r.size() > 13 && (r[2] != 0x91 || r[3] != 0x07 || r[4] != 0xFE || r[9] != 0xFF ||
+                              r[11] != 0x92 || r[12] != 0x40))
+            hdr_ok = false; // control 0x11 (mic OFF) + haptico 0x12, len 64
+        for (size_t k = 13; k < 77 && k < r.size(); ++k)
         {
             const int8_t s = static_cast<int8_t>(r[k]);
             max_abs = std::max(max_abs, std::abs(static_cast<int>(s)));
@@ -227,7 +244,7 @@ int main()
     check(size_ok, "tamanos de la escalera");
     check(seq_ok, "secuencia 0..15 con wrap");
     check(crc_ok, "CRC-32 de cada reporte");
-    check(hdr_ok, "cabecera 0x92 0x40 en sub-paquetes");
+    check(hdr_ok, "cabecera 0x11 (91 07 FE..FF) + 0x92 0x40 en sub-paquetes");
     // 6000 bytes = 93.75 frames -> 93 completos + 1 parcial que flush() rellena
     check(haptic_bytes == 94u * 64, "94 frames (93 + 1 parcial rellenado por flush)");
     check(max_abs >= 70 && max_abs <= 90, "amplitud s8 coherente (seno 20000 -> ~78)");

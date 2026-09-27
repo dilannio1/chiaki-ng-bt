@@ -2401,17 +2401,18 @@ bool StreamSession::InitBtChain()
 		return false;
 	}
 	bt_haptics = new DualSenseBtHaptics(&StreamSession::BtHapticsWriteCb, this, &StreamSession::BtHapticsSeqCb);
-	bt_mic = new DualSenseBtMic(bt_transport, &StreamSession::BtMicPcmCb, this);
-	if(!bt_mic->begin())
-	{
-		CHIAKI_LOGE(log.GetChiakiLog(), "dualsense-bt: falló el decodificador Opus del mic");
-		ShutdownBtChain();
-		return false;
-	}
-	if(!bt_mic->setMuted(muted)) // sincroniza con el estado de la sesión (mute honesto)
-		CHIAKI_LOGW(log.GetChiakiLog(), "dualsense-bt: no se pudo sincronizar el mute del mic (gate/LED)");
-	bt_mic->startPolling();
-	CHIAKI_LOGI(log.GetChiakiLog(), "dualsense-bt: cadena háptica+mic por Bluetooth activa");
+	// PARCHE dualsense-bt: microfono BT DESACTIVADO (2026-09-27).
+	// Causa raiz del caos en BT: al habilitar el mic, el control envia la
+	// variante-mic del reporte 0x31 (~99/s interleaved con el gamepad). SDL no
+	// filtra esa variante y la interpreta como estado del gamepad, lo que
+	// produce botones/ejes fantasma (dualsense-neo SPEC 7; SDL_hidapi_ps5.c no
+	// chequea el bit 1 del byte 1). Se envia UN SOLO 0x11 con mic-OFF (0xFE)
+	// para desenganchar ("unlatch") un posible enable previo latiado en el
+	// firmware; no se crea el capturador ni se inicia el hilo de polling.
+	// El mic volvera cuando SDL filtre la variante-mic.
+	// (SPEC: "Mic-enable latches... a mic-off 0x11 (0xFE) must be sent to actually stop it.")
+	bt_transport->sendMicControlSubpacket(false); // 0x11 mic-OFF: unlatch
+	CHIAKI_LOGI(log.GetChiakiLog(), "dualsense-bt: cadena haptica por Bluetooth activa (mic desactivado: causa botones fantasma en SDL)");
 	return true;
 }
 
