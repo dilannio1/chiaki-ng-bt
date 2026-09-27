@@ -62,7 +62,10 @@ private:
     // Contador del sub-paquete de control 0x11: avanza de 1 en 1 por reporte
     // (SPEC dualsense-neo: "Its counter steps by 1 per report").
     uint8_t ctrl_counter_ = 0;
-    // Contador de frames emitidos: el 0x11 se incluye 1 de cada 10 frames
-    // para no saturar el stack BT del control (~9/seg vs ~94/seg).
-    uint32_t emit_count_ = 0;
+    // El 0x11 se envia solo al inicio de un burst haptico (despues de silencio),
+    // no periodicamente. El pipeline se mantiene activo con el 0x12.
+    // Esto evita saturar el BT (~94/seg -> solo en transiciones).
+    bool in_burst_ = false;
+    // Estado del PRNG para dithering TPDF (mejora definicion en int16->s8).
+    uint32_t dither_state_ = 0x12345678;
 };

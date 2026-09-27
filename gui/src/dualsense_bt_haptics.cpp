@@ -76,6 +76,21 @@ void DualSenseBtHaptics::pushSamples(const int16_t *samples, size_t frame_count,
             double v = samples[i0 * 2 + ch] * (1.0 - frac) + samples[i1 * 2 + ch] * frac;
             v *= gain_;
             v = std::clamp(v, -32768.0, 32767.0);
+            // Dithering TPDF: agrega ruido triangular de +/-1 LSB antes de cuantizar.
+            // Esto convierte el error de cuantizacion (distorsion correlacionada)
+            // en ruido blanco no correlacionado, preservando detalles sutiles
+            // y mejorando la definicion percibida del haptico.
+            // PRNG xorshift32 simple y rapido.
+            dither_state_ ^= dither_state_ << 13;
+            dither_state_ ^= dither_state_ >> 17;
+            dither_state_ ^= dither_state_ << 5;
+            double dither = (static_cast<double>(dither_state_ & 0xFFFF) / 65535.0 - 0.5) * 256.0;
+            // Segundo sample para TPDF (triangular = suma de 2 uniformes)
+            dither_state_ ^= dither_state_ << 13;
+            dither_state_ ^= dither_state_ >> 17;
+            dither_state_ ^= dither_state_ << 5;
+            dither += (static_cast<double>(dither_state_ & 0xFFFF) / 65535.0 - 0.5) * 256.0;
+            v += dither;
             int s8 = static_cast<int>(std::lround(v / 256.0));
             s8 = std::clamp(s8, -128, 127);
             pending_[pending_len_++] = static_cast<uint8_t>(s8 & 0xFF);
@@ -101,16 +116,32 @@ void DualSenseBtHaptics::flush()
 
 void DualSenseBtHaptics::emitFrame(const uint8_t pcm[64])
 {
+    // Detecta silencio: si los 64 bytes son cero (o casi cero), es fin de burst.
+    // El proximo frame con audio enviara el 0x11 para "despertar" el pipeline.
+    bool is_silence = true;
+    for(int i = 0; i < 64; i++) {
+        if(pcm[i] != 0 && pcm[i] != 0xFF) { // 0xFF = -1 en s8, tambien es silencio
+            // Permite +/-1 como silencio (ruido de dithering)
+            int8_t s = static_cast<int8_t>(pcm[i]);
+            if(s < -1 || s > 1) { is_silence = false; break; }
+        }
+    }
+    if(is_silence) {
+        in_burst_ = false;
+        return; // No envia frames de silencio puro, ahorra BT
+    }
     // Sub-paquete 0x11 (control, 9 B) + sub-paquete 0x12 (haptico, 66 B).
     // Layout byte-identico a la captura real de hardware (dualsense-neo):
     //   91 07 FE 00 00 00 00 FF <ctr> | 92 40 <64 B PCM>
     // El 0x11 con mascara 0xFE (mic OFF) activa el pipeline de audio/hapticos
     // sin habilitar el microfono.
-    // PARCHE 2026-09-27: el 0x11 se envia solo 1 de cada 10 frames (~9/seg en
-    // vez de ~94/seg). Enviarlo con cada frame saturaba el stack BT del control
-    // y causaba glitches (pantallazos de UI del PS5). El pipeline haptico se
-    // mantiene activo con el 0x12 solo.
-    bool include_ctrl = (emit_count_++ % 10 == 0);
+    // PARCHE 2026-09-27: el 0x11 se envia SOLO al inicio de un burst haptico
+    // (primer frame despues de silencio), no con cada frame ni periodicamente.
+    // Enviarlo 94/seg saturaba el stack BT del control y causaba glitches
+    // (pantallazos de UI del PS5 como la calibracion HDR). El pipeline se
+    // mantiene activo con el 0x12 solo; el 0x11 solo necesita "despertarlo".
+    bool include_ctrl = !in_burst_;
+    in_burst_ = true;
     uint8_t sub[9 + 2 + HAPTIC_FRAME_BYTES];
     uint8_t *p = sub;
     size_t sub_len = 0;
@@ -242,9 +273,9 @@ int main()
                           (static_cast<uint32_t>(r[r.size() - 1]) << 24);
         if (stored != test_crc(r.data(), r.size() - 4))
             crc_ok = false;
-        // Layout: frames con (i%10==0) llevan [0x11: 91 07 FE .. FF ctr][0x12: 92 40 + 64 B];
-        // los demas llevan solo [0x12: 92 40 + 64 B] (el 0x11 se throttlea 1/10).
-        bool has_ctrl = (i % 10 == 0);
+        // Layout: el PRIMER frame del burst lleva [0x11: 91 07 FE .. FF ctr][0x12: 92 40 + 64 B];
+        // los demas llevan solo [0x12: 92 40 + 64 B] (el 0x11 va solo al inicio del burst).
+        bool has_ctrl = (i == 0);
         if (has_ctrl)
         {
             if (r.size() > 13 && (r[2] != 0x91 || r[3] != 0x07 || r[4] != 0xFE || r[9] != 0xFF ||
@@ -267,10 +298,11 @@ int main()
     check(size_ok, "tamanos de la escalera");
     check(seq_ok, "secuencia 0..15 con wrap");
     check(crc_ok, "CRC-32 de cada reporte");
-    check(hdr_ok, "cabecera 0x11 (1/10 frames) + 0x92 0x40 en sub-paquetes");
+    check(hdr_ok, "cabecera 0x11 (solo primer frame del burst) + 0x92 0x40 en sub-paquetes");
     // 6000 bytes = 93.75 frames -> 93 completos + 1 parcial que flush() rellena
     check(haptic_bytes == 94u * 64, "94 frames (93 + 1 parcial rellenado por flush)");
-    check(max_abs >= 70 && max_abs <= 90, "amplitud s8 coherente (seno 20000 -> ~78)");
+    // Con dithering TPDF, la amplitud varia +/-1 LSB alrededor del valor ideal (78)
+    check(max_abs >= 70 && max_abs <= 92, "amplitud s8 coherente con dithering (seno 20000 -> ~78 +/-1)");
     std::printf("reportes: %zu, primer id: 0x%02x\n", col.reports.size(), col.reports[0][0]);
     std::printf(failures == 0 ? "== superado ==\n" : "== %d FALLOS ==\n", failures);
     return failures == 0 ? 0 : 1;

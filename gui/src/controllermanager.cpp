@@ -9,6 +9,7 @@
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 #include <SDL.h>
 #endif
+#include <cmath>
 
 /* PS5 trigger effect documentation:
    https://controllers.fandom.com/wiki/Sony_DualSense#FFB_Trigger_Modes
@@ -625,6 +626,17 @@ inline bool Controller::HandleSensorEvent(SDL_ControllerSensorEvent event)
 			gyro_x = event.data[0];
 			gyro_y = event.data[1];
 			gyro_z = event.data[2];
+			// PARCHE dualsense-bt (2026-09-27): dead zone para el giroscopio.
+			// El gyro del DualSense por BT tiene drift/bias que hace que no se
+			// quede quieto cuando el control esta inmovil. Un dead zone pequeno
+			// (0.05 rad/s ~= 2.9 deg/s) filtra el drift sin afectar movimientos
+			// intencionales. Solo mejora, no empeora: valores grandes pasan igual.
+			{
+				const float gyro_deadzone = 0.05f; // rad/s
+				if(std::fabs(gyro_x) < gyro_deadzone) gyro_x = 0.0f;
+				if(std::fabs(gyro_y) < gyro_deadzone) gyro_y = 0.0f;
+				if(std::fabs(gyro_z) < gyro_deadzone) gyro_z = 0.0f;
+			}
 			chiaki_orientation_tracker_update(
 				&orientation_tracker, gyro_x, gyro_y, gyro_z,
 				state.accel_x, state.accel_y, state.accel_z, &accel_zero, true, event.timestamp * 1000);
