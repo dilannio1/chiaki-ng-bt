@@ -106,22 +106,34 @@ void DualSenseBtHaptics::emitFrame(const uint8_t pcm[64])
     //   91 07 FE 00 00 00 00 FF <ctr> | 92 40 <64 B PCM>
     // El 0x11 con mascara 0xFE (mic OFF) activa el pipeline de audio/hapticos
     // sin habilitar el microfono.
+    // PARCHE 2026-09-27: el 0x11 se envia solo 1 de cada 10 frames (~9/seg en
+    // vez de ~94/seg). Enviarlo con cada frame saturaba el stack BT del control
+    // y causaba glitches (pantallazos de UI del PS5). El pipeline haptico se
+    // mantiene activo con el 0x12 solo.
+    bool include_ctrl = (emit_count_++ % 10 == 0);
     uint8_t sub[9 + 2 + HAPTIC_FRAME_BYTES];
     uint8_t *p = sub;
-    *p++ = 0x91; // 0x11 | sized
-    *p++ = 0x07; // longitud del payload
-    *p++ = 0xFE; // mic OFF (mascara sin el bit de mic)
-    *p++ = 0x00;
-    *p++ = 0x00;
-    *p++ = 0x00;
-    *p++ = 0x00;
-    *p++ = 0xFF;
-    *p++ = ctrl_counter_++; // avanza de 1 en 1 por reporte
+    size_t sub_len = 0;
+    if(include_ctrl)
+    {
+        *p++ = 0x91; // 0x11 | sized
+        *p++ = 0x07; // longitud del payload
+        *p++ = 0xFE; // mic OFF (mascara sin el bit de mic)
+        *p++ = 0x00;
+        *p++ = 0x00;
+        *p++ = 0x00;
+        *p++ = 0x00;
+        *p++ = 0xFF;
+        *p++ = ctrl_counter_++; // avanza de 1 en 1 por reporte con 0x11
+        sub_len = 9;
+    }
     *p++ = SUBPKT_HAPTIC | 0x80; // 0x12 | bit 'sized'
     *p++ = HAPTIC_FRAME_BYTES;
     std::memcpy(p, pcm, HAPTIC_FRAME_BYTES);
+    p += HAPTIC_FRAME_BYTES;
+    sub_len += 2 + HAPTIC_FRAME_BYTES;
 
-    constexpr size_t need = 1 + 1 + sizeof(sub) + 4; // id + seq + sub + CRC
+    const size_t need = 1 + 1 + sub_len + 4; // id + seq + sub + CRC
     const ReportSize *sel = nullptr;
     for (const auto &r : kLadder)
     {
@@ -147,7 +159,7 @@ void DualSenseBtHaptics::emitFrame(const uint8_t pcm[64])
         seq_ = static_cast<uint8_t>((seq_ + 1) & 0x0F);
     }
     report[1] = static_cast<uint8_t>(seq << 4);
-    std::memcpy(report.data() + 2, sub, sizeof(sub));
+    std::memcpy(report.data() + 2, sub, sub_len);
     const uint32_t crc = crc32_dualsense(report.data(), sel->size - 4);
     report[sel->size - 4] = static_cast<uint8_t>(crc & 0xFF);
     report[sel->size - 3] = static_cast<uint8_t>((crc >> 8) & 0xFF);
@@ -230,11 +242,22 @@ int main()
                           (static_cast<uint32_t>(r[r.size() - 1]) << 24);
         if (stored != test_crc(r.data(), r.size() - 4))
             crc_ok = false;
-        // Layout: [id][seq][0x11: 91 07 FE 00 00 00 00 FF ctr][0x12: 92 40 + 64 B]
-        if (r.size() > 13 && (r[2] != 0x91 || r[3] != 0x07 || r[4] != 0xFE || r[9] != 0xFF ||
-                              r[11] != 0x92 || r[12] != 0x40))
-            hdr_ok = false; // control 0x11 (mic OFF) + haptico 0x12, len 64
-        for (size_t k = 13; k < 77 && k < r.size(); ++k)
+        // Layout: frames con (i%10==0) llevan [0x11: 91 07 FE .. FF ctr][0x12: 92 40 + 64 B];
+        // los demas llevan solo [0x12: 92 40 + 64 B] (el 0x11 se throttlea 1/10).
+        bool has_ctrl = (i % 10 == 0);
+        if (has_ctrl)
+        {
+            if (r.size() > 13 && (r[2] != 0x91 || r[3] != 0x07 || r[4] != 0xFE || r[9] != 0xFF ||
+                                  r[11] != 0x92 || r[12] != 0x40))
+                hdr_ok = false; // control 0x11 (mic OFF) + haptico 0x12, len 64
+        }
+        else
+        {
+            if (r.size() > 5 && (r[2] != 0x92 || r[3] != 0x40))
+                hdr_ok = false; // solo haptico 0x12, len 64
+        }
+        size_t pcm_start = has_ctrl ? 13 : 4; // con 0x11: 2+9+2=13; sin 0x11: 2+2=4
+        for (size_t k = pcm_start; k < pcm_start + 64 && k < r.size(); ++k)
         {
             const int8_t s = static_cast<int8_t>(r[k]);
             max_abs = std::max(max_abs, std::abs(static_cast<int>(s)));
@@ -244,7 +267,7 @@ int main()
     check(size_ok, "tamanos de la escalera");
     check(seq_ok, "secuencia 0..15 con wrap");
     check(crc_ok, "CRC-32 de cada reporte");
-    check(hdr_ok, "cabecera 0x11 (91 07 FE..FF) + 0x92 0x40 en sub-paquetes");
+    check(hdr_ok, "cabecera 0x11 (1/10 frames) + 0x92 0x40 en sub-paquetes");
     // 6000 bytes = 93.75 frames -> 93 completos + 1 parcial que flush() rellena
     check(haptic_bytes == 94u * 64, "94 frames (93 + 1 parcial rellenado por flush)");
     check(max_abs >= 70 && max_abs <= 90, "amplitud s8 coherente (seno 20000 -> ~78)");
