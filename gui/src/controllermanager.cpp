@@ -850,99 +850,23 @@ void Controller::SetTriggerEffects(uint8_t type_left, const uint8_t *data_left, 
 #ifdef CHIAKI_GUI_ENABLE_SDL_GAMECONTROLLER
 	if((!is_dualsense && !is_dualsense_edge) || !controller)
 		return;
-	// PARCHE dualsense-bt (2026-09-27): el PS5 envia los trigger effects en la
-	// familia "zone-packed" (0x21 Feedback, 0x25 Weapon, 0x26 Vibration), pero
-	// el firmware del DualSense por HID (USB/BT en PC) rechaza silenciosamente
-	// esos modos en varios controles/firmwares: el resultado son triggers
-	// "extremadamente debiles" aunque el PS5 mande fuerza maxima.
-	// La familia "simple" (0x01/0x02/0x06) SI la acepta el firmware.
-	// Traducimos zone-packed -> simple decodificando los bitmask de zonas.
-	// Ref: Nielk1 "Factories for all DualSense trigger effects",
-	// ds5_bridge "Trigger presets must use the simple effect family",
-	// padforge "DS5 trigger opcodes corrected".
+	// NOTA 2026-09-28: se REVIRTIO la traduccion zone-packed -> simple
+	// (0x21/0x25/0x26 -> 0x01/0x02/0x06). La prueba en hardware mostro que
+	// los triggers se sentian AUN MAS suaves con la traduccion: el firmware
+	// si procesa los modos oficiales y los modos "simples" (que Nielk1 marca
+	// como leftover que no deberian usarse) producen menos fuerza.
+	// Se pasan los bytes originales sin tocar, como antes.
 	uint8_t fixed_left[11] = {0}, fixed_right[11] = {0};
 	{
-		auto translate = [](uint8_t type, const uint8_t *data, uint8_t *out) {
+		auto passthrough = [](uint8_t type, const uint8_t *data, uint8_t *out) {
 			out[0] = type;
 			if(data)
 				memcpy(out + 1, data, 10);
 			else
 				memset(out + 1, 0, 10);
-			if(type == 0x21 && data) // Feedback zone-packed -> Simple_Feedback (0x01)
-			{
-				uint16_t active = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-				uint32_t force = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |
-					((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 24);
-				uint8_t pos = 0;
-				while(pos < 10 && !(active & (1u << pos)))
-					pos++;
-				if(pos >= 10)
-				{
-					out[0] = 0x05; // Off
-					memset(out + 1, 0, 10);
-					return;
-				}
-				uint8_t fv = (uint8_t)((force >> (3 * pos)) & 0x07);
-				out[0] = 0x01;
-				out[1] = pos;
-				out[2] = (uint8_t)(fv + 1); // 1..8
-				memset(out + 3, 0, 8);
-			}
-			else if(type == 0x25 && data) // Weapon zone-packed -> Simple_Weapon (0x02)
-			{
-				uint16_t zones = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-				uint8_t start = 0, end = 0;
-				bool found = false;
-				for(uint8_t i = 0; i < 10; i++)
-				{
-					if(zones & (1u << i))
-					{
-						if(!found)
-						{
-							start = i;
-							found = true;
-						}
-						end = i;
-					}
-				}
-				if(!found)
-				{
-					out[0] = 0x05; // Off
-					memset(out + 1, 0, 10);
-					return;
-				}
-				out[0] = 0x02;
-				out[1] = start;
-				out[2] = end;
-				out[3] = (uint8_t)((data[2] & 0x07) + 1); // strength 1..8
-				memset(out + 4, 0, 7);
-			}
-			else if(type == 0x26 && data) // Vibration zone-packed -> Simple_Vibration (0x06)
-			{
-				uint16_t active = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-				uint32_t amp = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |
-					((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 24);
-				uint8_t pos = 0;
-				while(pos < 10 && !(active & (1u << pos)))
-					pos++;
-				if(pos >= 10)
-				{
-					out[0] = 0x05; // Off
-					memset(out + 1, 0, 10);
-					return;
-				}
-				uint8_t av = (uint8_t)((amp >> (3 * pos)) & 0x07);
-				out[0] = 0x06;
-				out[1] = data[8]; // frequency
-				out[2] = (uint8_t)(av + 1); // amplitude 1..8
-				out[3] = pos;
-				memset(out + 4, 0, 7);
-			}
-			// 0x05 (Off), 0x00, modos simples (0x01/0x02/0x06) y no oficiales
-			// (0x22 Bow, 0x23 Galloping, 0x27 Machine) se pasan sin cambios.
 		};
-		translate(type_left, data_left, fixed_left);
-		translate(type_right, data_right, fixed_right);
+		passthrough(type_left, data_left, fixed_left);
+		passthrough(type_right, data_right, fixed_right);
 	}
 	DS5EffectsState_t state;
 	SDL_zero(state);
