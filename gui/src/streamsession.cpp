@@ -2686,9 +2686,40 @@ void StreamSession::Event(ChiakiEvent *event)
 					last_fx_log = now;
 					memcpy(last_fx, cur_fx, sizeof(cur_fx));
 					uint8_t ti = (ps5_trigger_intensity < 0) ? 0x70 : (uint8_t)ps5_trigger_intensity;
+					// Decodificador de triggers a lenguaje claro para diagnostico.
+					auto decode_fx = [](uint8_t t, const uint8_t *d, char *out, size_t out_sz) {
+						if(t == 0x25) { // Weapon
+							uint16_t zones = (uint16_t)d[0] | ((uint16_t)d[1] << 8);
+							int first = -1, last = -1, count = 0;
+							for(int i = 0; i < 10; i++) if(zones & (1u << i)) { if(first < 0) first = i; last = i; count++; }
+							int strength = (d[2] & 0x07) + 1;
+							snprintf(out, out_sz, "Weapon zonas %d-%d (%d activas) fuerza %d/8", first, last, count, strength);
+						} else if(t == 0x26) { // Vibration
+							uint16_t zones = (uint16_t)d[0] | ((uint16_t)d[1] << 8);
+							uint32_t amp = (uint32_t)d[2] | ((uint32_t)d[3] << 8) | ((uint32_t)d[4] << 16) | ((uint32_t)d[5] << 24);
+							int first = -1, count = 0, maxamp = 0;
+							for(int i = 0; i < 10; i++) if(zones & (1u << i)) { if(first < 0) first = i; count++; int a = (amp >> (3*i)) & 0x07; if(a > maxamp) maxamp = a; }
+							snprintf(out, out_sz, "Vibration %d zonas (desde %d) amplitud max %d/8 freq %u", count, first, maxamp + 1, d[8]);
+						} else if(t == 0x21) { // Feedback
+							uint16_t zones = (uint16_t)d[0] | ((uint16_t)d[1] << 8);
+							uint32_t force = (uint32_t)d[2] | ((uint32_t)d[3] << 8) | ((uint32_t)d[4] << 16) | ((uint32_t)d[5] << 24);
+							int first = -1, maxf = 0;
+							for(int i = 0; i < 10; i++) if(zones & (1u << i)) { if(first < 0) first = i; int f = (force >> (3*i)) & 0x07; if(f > maxf) maxf = f; }
+							snprintf(out, out_sz, "Feedback desde zona %d fuerza max %d/8", first, maxf + 1);
+						} else if(t == 0x05) {
+							snprintf(out, out_sz, "Off");
+						} else {
+							snprintf(out, out_sz, "tipo 0x%02x", t);
+						}
+					};
+					char desc_l[128], desc_r[128];
+					decode_fx(type_left, data_left, desc_l, sizeof(desc_l));
+					decode_fx(type_right, data_right, desc_r, sizeof(desc_r));
 					CHIAKI_LOGI(GetChiakiLog(), "dualsense-bt: trigger fx L(t=%u %02x%02x%02x%02x..) R(t=%u %02x%02x%02x%02x..) int=0x%02x",
 						type_left, data_left[0], data_left[1], data_left[2], data_left[3],
 						type_right, data_right[0], data_right[1], data_right[2], data_right[3], ti);
+					CHIAKI_LOGI(GetChiakiLog(), "dualsense-bt: trigger decoded L=[%s] R=[%s]",
+						desc_l, desc_r);
 				}
 			}
 			QMetaObject::invokeMethod(this, [this, type_left, data_left, type_right, data_right]() {

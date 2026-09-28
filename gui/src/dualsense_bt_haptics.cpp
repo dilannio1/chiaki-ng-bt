@@ -1,7 +1,9 @@
 #include "dualsense_bt_haptics.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -74,6 +76,9 @@ void DualSenseBtHaptics::pushSamples(const int16_t *samples, size_t frame_count,
         for (int ch = 0; ch < HAPTIC_CHANNELS; ++ch)
         {
             double v = samples[i0 * 2 + ch] * (1.0 - frac) + samples[i1 * 2 + ch] * frac;
+            // Medidor de pico: rastrea el maximo de entrada (int16 del PS5)
+            int abs_in = v >= 0 ? (int)v : (int)-v;
+            if(abs_in > peak_in_) peak_in_ = abs_in;
             v *= gain_;
             v = std::clamp(v, -32768.0, 32767.0);
             // Dithering TPDF: agrega ruido triangular de +/-1 LSB antes de cuantizar.
@@ -93,6 +98,9 @@ void DualSenseBtHaptics::pushSamples(const int16_t *samples, size_t frame_count,
             v += dither;
             int s8 = static_cast<int>(std::lround(v / 256.0));
             s8 = std::clamp(s8, -128, 127);
+            // Medidor de pico: rastrea el maximo de salida (s8 al control)
+            int abs_out = s8 >= 0 ? s8 : -s8;
+            if(abs_out > peak_out_) peak_out_ = abs_out;
             pending_[pending_len_++] = static_cast<uint8_t>(s8 & 0xFF);
             if (pending_len_ == HAPTIC_FRAME_BYTES)
             {
@@ -103,6 +111,24 @@ void DualSenseBtHaptics::pushSamples(const int16_t *samples, size_t frame_count,
         resample_pos_ += step;
     }
     resample_pos_ -= static_cast<double>(frame_count); // arrastra la fraccion
+    // Reporte periodico del medidor de pico (cada 5 s): muestra que tan fuerte
+    // manda el PS5 (entrada int16, max 32767) vs que sale al control (s8, max 127).
+    // Si la entrada es bajita, el PS5 manda suave. Si la entrada es alta pero se
+    // siente debil, el problema esta en el control/firmware.
+    {
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if(peak_window_start_ms_ == 0) peak_window_start_ms_ = now_ms;
+        if(now_ms - peak_window_start_ms_ >= 5000) {
+            if(peak_in_ > 100 || peak_out_ > 1) { // solo si hubo actividad
+                fprintf(stderr, "dualsense-bt: haptic peak in=%d/32767 out=%d/127 gain=%.1f\n",
+                    peak_in_, peak_out_, gain_);
+            }
+            peak_in_ = 0;
+            peak_out_ = 0;
+            peak_window_start_ms_ = now_ms;
+        }
+    }
 }
 
 void DualSenseBtHaptics::flush()

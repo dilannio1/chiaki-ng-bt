@@ -64,4 +64,10 @@ private:
     uint8_t ctrl_counter_ = 0;
     // Estado del PRNG para dithering TPDF (mejora definicion en int16->s8).
     uint32_t dither_state_ = 0x12345678;
+    // Medidor de pico para diagnostico: rastrea el maximo absoluto de entrada
+    // (int16 del PS5) y de salida (s8 al control) en una ventana de tiempo.
+    // Permite ver en el log si el PS5 manda senal bajita o si se pierde en el camino.
+    int peak_in_ = 0;
+    int peak_out_ = 0;
+    uint64_t peak_window_start_ms_ = 0;
 };
