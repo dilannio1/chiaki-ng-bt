@@ -45,6 +45,16 @@ public:
     // Multiplicador de intensidad (1.0 = normal, segun la consola).
     void setGain(float gain) { gain_ = gain; }
 
+    // Retorna y reinicia los picos de la ventana actual (para diagnostico).
+    // peak_in: maximo absoluto de entrada int16 (max 32767).
+    // peak_out: maximo absoluto de salida s8 (max 127).
+    void takePeaks(int &peak_in, int &peak_out) {
+        peak_in = peak_in_;
+        peak_out = peak_out_;
+        peak_in_ = 0;
+        peak_out_ = 0;
+    }
+
     // Emite el frame parcial pendiente (rellenado con ceros).
     void flush();
 
@@ -65,9 +75,7 @@ private:
     // Estado del PRNG para dithering TPDF (mejora definicion en int16->s8).
     uint32_t dither_state_ = 0x12345678;
     // Medidor de pico para diagnostico: rastrea el maximo absoluto de entrada
-    // (int16 del PS5) y de salida (s8 al control) en una ventana de tiempo.
-    // Permite ver en el log si el PS5 manda senal bajita o si se pierde en el camino.
+    // (int16 del PS5) y de salida (s8 al control). Se lee con takePeaks().
     int peak_in_ = 0;
     int peak_out_ = 0;
-    uint64_t peak_window_start_ms_ = 0;
 };

@@ -1,9 +1,7 @@
 #include "dualsense_bt_haptics.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -111,24 +109,8 @@ void DualSenseBtHaptics::pushSamples(const int16_t *samples, size_t frame_count,
         resample_pos_ += step;
     }
     resample_pos_ -= static_cast<double>(frame_count); // arrastra la fraccion
-    // Reporte periodico del medidor de pico (cada 5 s): muestra que tan fuerte
-    // manda el PS5 (entrada int16, max 32767) vs que sale al control (s8, max 127).
-    // Si la entrada es bajita, el PS5 manda suave. Si la entrada es alta pero se
-    // siente debil, el problema esta en el control/firmware.
-    {
-        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        if(peak_window_start_ms_ == 0) peak_window_start_ms_ = now_ms;
-        if(now_ms - peak_window_start_ms_ >= 5000) {
-            if(peak_in_ > 100 || peak_out_ > 1) { // solo si hubo actividad
-                fprintf(stderr, "dualsense-bt: haptic peak in=%d/32767 out=%d/127 gain=%.1f\n",
-                    peak_in_, peak_out_, gain_);
-            }
-            peak_in_ = 0;
-            peak_out_ = 0;
-            peak_window_start_ms_ = now_ms;
-        }
-    }
+    // Los picos se leen con takePeaks() desde streamsession.cpp y se registran
+    // con CHIAKI_LOGI (fprintf a stderr no lo captura el log de chiaki).
 }
 
 void DualSenseBtHaptics::flush()

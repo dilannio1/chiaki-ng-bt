@@ -834,6 +834,15 @@ void StreamSession::ToggleMute()
 		return;
 	if(!mic_connected)
 	{
+		// PARCHE dualsense-bt: con DualSense por Bluetooth, no abrir ningun
+		// microfono. El mic BT esta desactivado (causa botones fantasma en SDL)
+		// y abrir el mic del sistema ('Auto') genera overflows del ring buffer
+		// y puede colgar el programa al 100% CPU cuando el PS5 pide microfono.
+		if(InitBtChain())
+		{
+			CHIAKI_LOGI(GetChiakiLog(), "dualsense-bt: microfono omitido por Bluetooth (BT mic desactivado, sin mic del sistema)");
+			return;
+		}
 #ifdef Q_OS_MACOS
 		if(!mic_authorization)
 		{
@@ -2254,6 +2263,19 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 		{
 			bt_haptics->setGain(BtRumbleGain(rumble_haptics_intensity));
 			bt_haptics->pushSamples(reinterpret_cast<int16_t *>(buf), buf_size / (2 * sizeof(int16_t)), 3000);
+			// Medidor de pico cada 5 s: muestra que tan fuerte manda el PS5
+			// (entrada int16, max 32767) vs que sale al control (s8, max 127).
+			static auto last_haptic_peak_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+			auto now = std::chrono::steady_clock::now();
+			if(now - last_haptic_peak_log > std::chrono::seconds(5))
+			{
+				last_haptic_peak_log = now;
+				int peak_in = 0, peak_out = 0;
+				bt_haptics->takePeaks(peak_in, peak_out);
+				if(peak_in > 100 || peak_out > 1)
+					CHIAKI_LOGI(GetChiakiLog(), "dualsense-bt: haptic peak in=%d/32767 out=%d/127 gain=%.1f",
+						peak_in, peak_out, BtRumbleGain(rumble_haptics_intensity));
+			}
 			return;
 		}
 		// Fallback: rumble convencional (código original)
