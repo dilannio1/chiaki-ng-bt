@@ -37,6 +37,7 @@
 // before the ctrl channel is given up. A single bad packet must not end it: without ctrl
 // the console stops hearing heartbeat replies and ends the session.
 #define CTRL_RUDP_ERROR_LIMIT_MS 10000
+#define CTRL_RUDP_ERROR_RETRY_MS 10
 
 typedef enum ctrl_message_type_t {
 	CTRL_MESSAGE_TYPE_SESSION_ID = 0x33,
@@ -539,6 +540,11 @@ static void *ctrl_thread_func(void *user)
 					ctrl_failed(ctrl, CHIAKI_QUIT_REASON_CTRL_UNKNOWN);
 					break;
 				}
+				// a socket stuck in an error state stays readable, so pause instead of spinning;
+				// a message to send or a stop request still wakes the loop at once
+				chiaki_mutex_unlock(&ctrl->notif_mutex);
+				chiaki_stop_pipe_sleep(&ctrl->notif_pipe, CTRL_RUDP_ERROR_RETRY_MS);
+				chiaki_mutex_lock(&ctrl->notif_mutex);
 				continue;
 			}
 			rudp_error_since_ms = 0;
