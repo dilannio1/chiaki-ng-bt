@@ -27,10 +27,10 @@ jobs:
         tag: weekly-canary-release-${{ github.sha }}
         allowUpdates: true
         bodyFile: "${{ github.workspace }}/release_notes.md"
-        token: "${{ secrets.RELEASE_PAT }}"
+        token: "${{ github.token }}"
     - uses: sgpublic/delete-release-action@v1.2
       with:
-        repo: 'streetpea/chiaki-ng'
+        repo: 'dilannio1/chiaki-ng-bt'
         release-drop: false
         pre-release-drop: true
         pre-release-keep-count: 1
