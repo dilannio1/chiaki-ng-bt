@@ -104,7 +104,7 @@ private:
     std::deque<std::vector<uint8_t>> write_queue_;
     bool writer_stop_ = false;
     bool writer_running_ = false;
-    static constexpr size_t kWriteQueueMax = 32; // ~340 ms de háptica a 94 Hz
+    static constexpr size_t kWriteQueueMax = 6; // ~60 ms de háptica a 94 Hz: feedback fresco, no atrasado
     void writerLoop();
     void startWriter();
     void stopWriter();

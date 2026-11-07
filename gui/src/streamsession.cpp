@@ -2264,7 +2264,23 @@ void StreamSession::PushHapticsFrame(uint8_t *buf, size_t buf_size)
 		// buf = PCM estéreo int16 @ 3000 Hz directo del PS5: coincide exacto
 		// con el formato del sub-paquete BT 0x12 (64 B = 10.667 ms), solo se
 		// convierte int16 -> s8. Sin remuestreo.
-		if(InitBtChain() && bt_haptics)
+		// No reintentar abrir la cadena BT en cada frame: InitBtChain()
+		// enumera hidapi y lee un reporte por candidato (300 ms+ por intento)
+		// y esto corre en el hilo de red/audio de Takion. Si no hay
+		// DualSense por Bluetooth, se reintenta como mucho una vez cada 5 s;
+		// mientras tanto cae al rumble convencional de abajo.
+		bool bt_chain_up = bt_transport && bt_transport->isOpen();
+		if(!bt_chain_up)
+		{
+			uint64_t now_ms = chiaki_time_now_monotonic_ms();
+			if(now_ms >= bt_chain_retry_after_ms)
+			{
+				bt_chain_up = InitBtChain();
+				if(!bt_chain_up)
+					bt_chain_retry_after_ms = now_ms + 5000;
+			}
+		}
+		if(bt_chain_up && bt_haptics)
 		{
 			bt_haptics->setGain(BtRumbleGain(rumble_haptics_intensity));
 			bt_haptics->pushSamples(reinterpret_cast<int16_t *>(buf), buf_size / (2 * sizeof(int16_t)), 3000);

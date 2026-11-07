@@ -303,6 +303,12 @@ class StreamSession : public QObject
 		DualSenseBtTransport *bt_transport = nullptr;
 		DualSenseBtHaptics *bt_haptics = nullptr;
 		DualSenseBtMic *bt_mic = nullptr;
+		// PARCHE dualsense-bt: no reintentar abrir la cadena BT en cada frame
+		// de háptica cuando no hay DualSense por Bluetooth: InitBtChain()
+		// enumera hidapi y lee un reporte por candidato (300 ms+), y
+		// PushHapticsFrame corre en el hilo de red/audio de Takion. Si el
+		// último intento falló, no se reintenta hasta este instante.
+		uint64_t bt_chain_retry_after_ms = 0;
 		QMap<Qt::Key, int> key_map;
 		QElapsedTimer connect_timer;
 
